@@ -1,27 +1,60 @@
-from pyspark.sql import SparkSession
+import sys
+
+from awsglue.utils import getResolvedOptions
+from awsglue.context import GlueContext
+from awsglue.job import Job
+
+from pyspark.context import SparkContext
 from pyspark.sql.functions import col
 
-#Spark session creatoin
-spark = SparkSession.builder.appName("RetailETL").getOrCreate()
 
-#Read CSV from Raw Bucket
-df = spark.read.option("header", "true").csv(
-    "s3://bhime-data-pipeline-raw/"
-)
+# Glue Boilerplate
 
-print("Original Record Count:", df.count())
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 
-#duplicate rows removal
+sc = SparkContext()
+
+glueContext = GlueContext(sc)
+
+spark = glueContext.spark_session
+
+job = Job(glueContext)
+
+job.init(args['JOB_NAME'], args)
+
+# Configuration
+
+RAW_PATH = "s3://bhime-data-pipeline-raw/"
+
+PROCESSED_PATH = "s3://bhime-data-pipeline-processed/"
+
+# Read Raw CSV
+
+print("Reading data...")
+
+df = spark.read \
+    .option("header", True) \
+    .option("inferSchema", True) \
+    .csv(RAW_PATH)
+
+print(f"Rows Before Cleaning : {df.count()}")
+
+# Remove Duplicate Records
+
 df = df.dropDuplicates()
 
-#null values removal
+# Remove Null Values
+
 df = df.na.drop()
 
-print("Cleaned Record Count:", df.count())
+print(f"Rows After Cleaning : {df.count()}")
 
-# CSV to Parquet conversion
+# Convert CSV → Parquet
+
 df.write \
     .mode("overwrite") \
-    .parquet("s3://bhime-data-pipeline-processed/")
+    .parquet(PROCESSED_PATH)
 
-spark.stop()
+print("Parquet files written successfully.")
+
+job.commit()
