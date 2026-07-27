@@ -26,7 +26,7 @@ job.init(args['JOB_NAME'], args)
 
 RAW_PATH = "s3://bhime-data-pipeline-raw/"
 
-PROCESSED_PATH = "s3://bhime-data-pipeline-processed/"
+PROCESSED_PATH = "s3://bhime-data-pipeline-processed/clean-data/"
 
 # Read Raw CSV
 
