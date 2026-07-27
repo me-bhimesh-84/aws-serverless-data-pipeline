@@ -1,4 +1,5 @@
 import sys
+import logging
 
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
@@ -7,54 +8,67 @@ from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql.functions import col
 
+# Logging
 
-# Glue Boilerplate
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 
 sc = SparkContext()
-
 glueContext = GlueContext(sc)
-
 spark = glueContext.spark_session
 
 job = Job(glueContext)
-
-job.init(args['JOB_NAME'], args)
+job.init(args["JOB_NAME"], args)
 
 # Configuration
-
 RAW_PATH = "s3://bhime-data-pipeline-raw/"
-
 PROCESSED_PATH = "s3://bhime-data-pipeline-processed/clean-data/"
 
-# Read Raw CSV
+# ETL
 
-print("Reading data...")
+try:
 
-df = spark.read \
-    .option("header", True) \
-    .option("inferSchema", True) \
-    .csv(RAW_PATH)
+    logger.info("Reading raw CSV files...")
 
-print(f"Rows Before Cleaning : {df.count()}")
+    df = (
+        spark.read
+        .option("header", True)
+        .option("inferSchema", True)
+        .csv(RAW_PATH)
+    )
 
-# Remove Duplicate Records
+    before = df.count()
+    logger.info(f"Rows before cleaning: {before}")
 
-df = df.dropDuplicates()
+    # Remove duplicates
+    df = df.dropDuplicates()
 
-# Remove Null Values
+    # Remove rows with NULL values
+    df = df.na.drop()
 
-df = df.na.drop()
+    after = df.count()
+    logger.info(f"Rows after cleaning: {after}")
 
-print(f"Rows After Cleaning : {df.count()}")
+    removed = before - after
+    logger.info(f"Rows removed: {removed}")
 
-# Convert CSV → Parquet
+    logger.info("Writing Snappy-compressed Parquet...")
 
-df.write \
-    .mode("overwrite") \
-    .parquet(PROCESSED_PATH)
+    (
+        df.coalesce(1)
+          .write
+          .mode("overwrite")
+          .option("compression", "snappy")
+          .parquet(PROCESSED_PATH)
+    )
 
-print("Parquet files written successfully.")
+    logger.info("ETL completed successfully.")
 
-job.commit()
+except Exception as e:
+    logger.exception("Glue ETL failed.")
+    raise e
+
+finally:
+    job.commit()
