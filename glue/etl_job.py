@@ -1,74 +1,112 @@
-import sys
+import json
+import os
 import logging
+from datetime import datetime
 
-from awsglue.utils import getResolvedOptions
-from awsglue.context import GlueContext
-from awsglue.job import Job
+import boto3
 
-from pyspark.context import SparkContext
-from pyspark.sql.functions import col
+# ------------------------------------------------------------------
+# Logging Configuration
+# ------------------------------------------------------------------
 
-# Logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ------------------------------------------------------------------
+# AWS Clients
+# ------------------------------------------------------------------
 
-args = getResolvedOptions(sys.argv, ["JOB_NAME"])
+s3 = boto3.client("s3")
+glue = boto3.client("glue")
 
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
+# ------------------------------------------------------------------
+# Environment Variables
+# ------------------------------------------------------------------
 
-job = Job(glueContext)
-job.init(args["JOB_NAME"], args)
+RAW_BUCKET = os.environ["RAW_BUCKET"]
+GLUE_JOB_NAME = os.environ["GLUE_JOB_NAME"]
 
-# Configuration
-RAW_PATH = "s3://bhime-data-pipeline-raw/"
-PROCESSED_PATH = "s3://bhime-data-pipeline-processed/clean-data/"
+# ------------------------------------------------------------------
+# Lambda Handler
+# ------------------------------------------------------------------
 
-# ETL
+def lambda_handler(event, context):
 
-try:
+    try:
 
-    logger.info("Reading raw CSV files...")
+        # Read S3 Event
+        record = event["Records"][0]
+        source_bucket = record["s3"]["bucket"]["name"]
+        source_key = record["s3"]["object"]["key"]
 
-    df = (
-        spark.read
-        .option("header", True)
-        .option("inferSchema", True)
-        .csv(RAW_PATH)
-    )
+        logger.info(f"New file detected: {source_key}")
 
-    before = df.count()
-    logger.info(f"Rows before cleaning: {before}")
+        # ----------------------------------------------------------
+        # Validate File Type
+        # ----------------------------------------------------------
 
-    # Remove duplicates
-    df = df.dropDuplicates()
+        if not source_key.lower().endswith((".csv", ".parquet")):
+            logger.warning("Unsupported file type. Skipping processing.")
 
-    # Remove rows with NULL values
-    df = df.na.drop()
+            return {
+                "statusCode": 400,
+                "body": "Unsupported file type."
+            }
 
-    after = df.count()
-    logger.info(f"Rows after cleaning: {after}")
+        # ----------------------------------------------------------
+        # Generate Timestamped Filename
+        # ----------------------------------------------------------
 
-    removed = before - after
-    logger.info(f"Rows removed: {removed}")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    logger.info("Writing Snappy-compressed Parquet...")
+        filename = source_key.split("/")[-1]
 
-    (
-        df.coalesce(1)
-          .write
-          .mode("overwrite")
-          .option("compression", "snappy")
-          .parquet(PROCESSED_PATH)
-    )
+        destination_key = f"{timestamp}_{filename}"
 
-    logger.info("ETL completed successfully.")
+        # ----------------------------------------------------------
+        # Copy File to Raw Bucket
+        # ----------------------------------------------------------
 
-except Exception as e:
-    logger.exception("Glue ETL failed.")
-    raise e
+        logger.info(f"Copying file to {RAW_BUCKET}")
 
-finally:
-    job.commit()
+        s3.copy_object(
+            Bucket=RAW_BUCKET,
+            CopySource={
+                "Bucket": source_bucket,
+                "Key": source_key
+            },
+            Key=destination_key
+        )
+
+        logger.info("File copied successfully.")
+
+        # ----------------------------------------------------------
+        # Start Glue Job
+        # ----------------------------------------------------------
+
+        response = glue.start_job_run(
+            JobName=GLUE_JOB_NAME
+        )
+
+        logger.info(
+            f"Glue Job Started Successfully. JobRunId: {response['JobRunId']}"
+        )
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "File copied and Glue job triggered successfully.",
+                "jobRunId": response["JobRunId"]
+            })
+        }
+
+    except Exception as e:
+
+        logger.exception("Pipeline execution failed.")
+
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": str(e)
+            })
+        }
