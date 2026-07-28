@@ -252,17 +252,6 @@ Amazon SNS delivers email notifications for configured pipeline events.
 
 ---
 
-# Sample Athena Query
-
-```sql
-SELECT region,
-       SUM(total_amount) AS revenue
-FROM clean_data
-GROUP BY region
-ORDER BY revenue DESC;
-```
-
----
 
 # Key Design Decisions
 
